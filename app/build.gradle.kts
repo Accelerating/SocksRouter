@@ -17,8 +17,8 @@ android {
         applicationId = "app.socksrouter.android"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = providers.gradleProperty("releaseVersionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("releaseVersionName").orNull ?: "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
