@@ -293,40 +293,42 @@ private fun RouterScreen(activity: Activity) {
                     onLogClick = { showDiagnostics = true },
                 )
             }
-            item {
-                SectionHeader(
-                    title = "应用路由",
-                    summary = "已选择 $selectedGroupCount 个应用组 · $selectedMeaning",
-                )
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        query,
-                        { query = it },
-                        label = { Text("搜索应用或包名") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.Tune, contentDescription = null) },
+            if (routingMode != RoutingMode.GLOBAL_PROXY) {
+                item {
+                    SectionHeader(
+                        title = "应用路由",
+                        summary = "已选择 $selectedGroupCount 个应用组 · $selectedMeaning",
                     )
-                    FilterChip(showSystem, { showSystem = !showSystem }, label = { Text("系统") })
                 }
-            }
-            items(visibleApps, key = { it.packageNames.joinToString("\u0000") }) { app ->
-                val selectedInGroup = app.packageNames.any { it in selected }
-                AppRouteRow(
-                    app = app,
-                    selected = app.packageNames.all { it in selected },
-                    onClick = {
-                        if (selectedInGroup) {
-                            app.packageNames.forEach { selected.remove(it) }
-                        } else {
-                            app.packageNames.forEach { if (it !in selected) selected.add(it) }
-                        }
-                        persist()
-                    },
-                )
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            query,
+                            { query = it },
+                            label = { Text("搜索应用或包名") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            leadingIcon = { Icon(Icons.Default.Tune, contentDescription = null) },
+                        )
+                        FilterChip(showSystem, { showSystem = !showSystem }, label = { Text("系统") })
+                    }
+                }
+                items(visibleApps, key = { it.packageNames.joinToString("\u0000") }) { app ->
+                    val selectedInGroup = app.packageNames.any { it in selected }
+                    AppRouteRow(
+                        app = app,
+                        selected = app.packageNames.all { it in selected },
+                        onClick = {
+                            if (selectedInGroup) {
+                                app.packageNames.forEach { selected.remove(it) }
+                            } else {
+                                app.packageNames.forEach { if (it !in selected) selected.add(it) }
+                            }
+                            persist()
+                        },
+                    )
+                }
             }
         }
     }
@@ -539,12 +541,17 @@ private fun RoutingCard(routingMode: RoutingMode, onModeChange: (RoutingMode) ->
                 Spacer(Modifier.width(8.dp))
                 Column {
                     Text("路由模式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("决定已选应用的网络出口", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (routingMode == RoutingMode.GLOBAL_PROXY) "所有应用都走 SOCKS5，无需选择应用" else "决定已选应用的网络出口",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             Spacer(Modifier.height(4.dp))
             RoutingChoice("仅代理已选择的应用", routingMode == RoutingMode.SELECTED_PROXY) { onModeChange(RoutingMode.SELECTED_PROXY) }
             RoutingChoice("仅直连已选择的应用", routingMode == RoutingMode.SELECTED_DIRECT) { onModeChange(RoutingMode.SELECTED_DIRECT) }
+            RoutingChoice("全局代理", routingMode == RoutingMode.GLOBAL_PROXY) { onModeChange(RoutingMode.GLOBAL_PROXY) }
         }
     }
 }

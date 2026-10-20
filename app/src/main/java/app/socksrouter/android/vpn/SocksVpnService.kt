@@ -122,18 +122,23 @@ class SocksVpnService : VpnService() {
             .setBlocking(false)
 
         // The app itself remains outside the VPN, preventing the native SOCKS socket from looping.
-        config.allowedPackages.forEach { packageName ->
-            try {
-                if (config.routingMode == RoutingMode.SELECTED_PROXY) {
-                    builder.addAllowedApplication(packageName)
-                } else {
-                    builder.addDisallowedApplication(packageName)
+        when (config.routingMode) {
+            RoutingMode.SELECTED_PROXY, RoutingMode.SELECTED_DIRECT -> {
+                config.allowedPackages.forEach { selectedPackage ->
+                    try {
+                        if (config.routingMode == RoutingMode.SELECTED_PROXY) {
+                            builder.addAllowedApplication(selectedPackage)
+                        } else {
+                            builder.addDisallowedApplication(selectedPackage)
+                        }
+                    } catch (_: PackageManager.NameNotFoundException) {
+                        // An app may have been uninstalled between selection and tunnel startup.
+                    }
                 }
-            } catch (_: PackageManager.NameNotFoundException) {
-                // An app may have been uninstalled between selection and tunnel startup.
             }
+            RoutingMode.GLOBAL_PROXY -> Unit // Capture every app regardless of saved selections.
         }
-        if (config.routingMode == RoutingMode.SELECTED_DIRECT) {
+        if (config.routingMode != RoutingMode.SELECTED_PROXY) {
             builder.addDisallowedApplication(packageName)
         }
 

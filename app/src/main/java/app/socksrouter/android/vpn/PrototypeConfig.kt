@@ -16,7 +16,8 @@ data class PrototypeConfig(
     fun validationMessage(): String? = when {
         !IPV4.matches(serverAddress) -> "请输入有效的 SOCKS5 IPv4 地址"
         serverPort !in 1..65535 -> "端口必须在 1 到 65535 之间"
-        allowedPackages.isEmpty() -> "请至少选择一个需要代理的应用"
+        routingMode == RoutingMode.SELECTED_PROXY && allowedPackages.isEmpty() -> "请至少选择一个需要代理的应用"
+        routingMode == RoutingMode.SELECTED_DIRECT && allowedPackages.isEmpty() -> "请至少选择一个需要直连的应用"
         else -> null
     }
 

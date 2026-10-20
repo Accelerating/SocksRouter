@@ -10,6 +10,7 @@ import app.socksrouter.android.dns.DnsSettings
 enum class RoutingMode {
     SELECTED_PROXY,
     SELECTED_DIRECT,
+    GLOBAL_PROXY,
 }
 
 data class SavedConfig(
