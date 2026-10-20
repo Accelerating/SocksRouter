@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>THROWAWAY · SOCKS 路由器连接状态原型</title>
+  <style>
+    :root { color-scheme: light dark; --accent:#2563eb; --ok:#16803c; --warn:#b45309; --bad:#c62828; --line:#cbd5e1; --surface:#f8fafc; --text:#172033; --muted:#5e6b7e; }
+    @media (prefers-color-scheme:dark) { :root { --surface:#172033; --text:#eef4ff; --muted:#aebbd0; --line:#3a4659; } }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.55 system-ui,-apple-system,"Noto Sans SC",sans-serif; color:var(--text); background:Canvas; }
+    main { width:min(1080px,calc(100% - 32px)); margin:32px auto 64px; }
+    header,.panel { border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:18px; background:var(--surface); }
+    h1,h2,h3,p { margin-top:0; } h1 { font-size:26px; margin-bottom:8px; } h2 { font-size:19px; } h3 { font-size:16px; }
+    .throwaway { display:inline-block; color:white; background:var(--bad); padding:4px 9px; border-radius:99px; font-weight:800; font-size:12px; letter-spacing:.06em; }
+    .question { max-width:850px; margin:12px 0 0; color:var(--muted); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }
+    .field { background:Canvas; border:1px solid var(--line); padding:11px 13px; border-radius:10px; min-height:74px; }
+    .field span { display:block; color:var(--muted); font-size:12px; } .field strong { display:block; margin-top:3px; }
+    .wide { grid-column:1/-1; }
+    .status { border-left:5px solid var(--accent); } .status.ok { border-left-color:var(--ok); } .status.bad { border-left-color:var(--bad); } .status.warn { border-left-color:var(--warn); }
+    .actions { display:flex; flex-wrap:wrap; gap:9px; }
+    button { border:1px solid var(--accent); background:Canvas; color:var(--accent); border-radius:9px; padding:9px 12px; font:inherit; font-weight:650; cursor:pointer; }
+    button:hover { background:color-mix(in srgb,var(--accent) 10%,Canvas); } button.primary { color:white; background:var(--accent); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+    .tabs button[aria-selected="true"] { color:white; background:var(--accent); }
+    .step { display:flex; align-items:flex-start; gap:12px; padding:12px 0; border-top:1px solid var(--line); }
+    .step.done { opacity:.55; } .step.current { background:color-mix(in srgb,var(--accent) 7%,transparent); }
+    .step button { min-width:145px; } .step p { margin:4px 0 0; color:var(--muted); }
+    .note { color:var(--muted); } .event { margin-top:14px; padding:10px 12px; border-radius:9px; background:Canvas; }
+    code { font-family:ui-monospace,monospace; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="throwaway">THROWAWAY · 不进入正式产品</span>
+    <h1>连接与防泄漏状态机</h1>
+    <p class="question">这个原型要回答：当用户切换服务器、网络断开又恢复、运行中改变配置、拒绝 VPN 权限、后台服务崩溃，以及 DNS 严格模式或自动降级时，连接状态是否可预测，并且任何故障期间都不会让“应代理”的流量偷偷直连？</p>
+  </header>
+
+  <section class="panel status" id="statusPanel">
+    <h2>当前完整状态</h2>
+    <div class="grid" id="stateView"></div>
+    <div class="event" id="lastEvent" aria-live="polite"></div>
+  </section>
+
+  <section class="panel">
+    <h2>自由操作</h2>
+    <p class="note">按钮始终可点。无效操作不会悄悄改变状态，而会说明为什么被拒绝。</p>
+    <div class="actions" id="freeActions"></div>
+  </section>
+
+  <section class="panel">
+    <h2>引导场景</h2>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div id="walkthrough"></div>
+  </section>
+</main>
+
+<script>
+/* 可移植的纯状态机：不引用 DOM。HTML 外壳只是人工验证工具。 */
+const ConnectionMachine = (() => {
+  const initialState = () => ({
+    intent: "stopped", permission: "unknown", service: "stopped",
+    network: "available", connection: "stopped", server: "家里 · 192.168.1.8:1080",
+    configRevision: 1, appliedRevision: null, retrySeconds: null,
+    routedTraffic: "blocked", lastStop: "none",
+    dns: { mode:"strict", doh:"Cloudflare DoH", custom:"192.168.1.1:53", system:true, active:"none", cacheEntries:0 },
+    message: "初始状态：代理未启动，所有应用使用系统网络。"
+  });
+  const withMessage = (s, message) => ({...s, message});
+  function selectDns(dns) {
+    if (dns.doh) return {...dns, active:"DoH"};
+    if (dns.custom) return {...dns, active:"自定义 DNS"};
+    return {...dns, active:"系统 DNS"};
+  }
+  function connect(s, message="正在建立 VPN，并连接当前 SOCKS5 服务器。") {
+    return {...s, service:"running", connection:"connecting", routedTraffic:"blocked",
+      appliedRevision:s.configRevision, retrySeconds:null, dns:selectDns({...s.dns,cacheEntries:0}), message};
+  }
+  function reducer(state, action) {
+    const s = structuredClone(state);
+    switch(action.type) {
+      case "RESET": return initialState();
+      case "START":
+        if (s.intent === "running") return withMessage(s,"已处于启动意图，无需重复启动。");
+        if (s.permission !== "granted") return {...s,intent:"waiting-permission",connection:"waiting-permission",routedTraffic:"blocked",message:"等待系统 VPN 授权；授权前不会捕获流量。"};
+        return connect({...s,intent:"running"});
+      case "PERMISSION_GRANTED":
+        if (s.intent !== "waiting-permission") return withMessage({...s,permission:"granted"},"已记录 VPN 权限；当前没有待继续的启动请求。");
+        return connect({...s,permission:"granted",intent:"running"},"VPN 权限已授予，继续连接。等待连接成功前，应代理流量保持阻止。");
+      case "PERMISSION_DENIED":
+        if (s.intent !== "waiting-permission") return withMessage({...s,permission:"denied"},"已记录权限拒绝；代理本来就没有运行。");
+        return {...s,permission:"denied",intent:"stopped",service:"stopped",connection:"permission-denied",routedTraffic:"system-direct",message:"用户拒绝 VPN 权限。启动取消，未建立 VPN；手机维持原有系统网络。"};
+      case "CONNECTED":
+        if (s.connection !== "connecting" && s.connection !== "reconnecting") return withMessage(s,"忽略迟到的连接成功事件：当前并不在连接中。");
+        if (s.network !== "available") return withMessage(s,"忽略连接成功：当前物理网络不可用。");
+        return {...s,connection:"connected",routedTraffic:"via-socks",retrySeconds:null,message:"连接成功：应代理流量经 SOCKS5；直连名单仍在 VPN 捕获范围之外。"};
+      case "CONNECTION_FAILED":
+        if (s.intent !== "running") return withMessage(s,"忽略失败事件：用户已停止代理。");
+        return {...s,connection:"reconnecting",routedTraffic:"blocked",retrySeconds:5,message:"SOCKS5 连接失败。VPN 保持，代理流量被阻止，5 秒后重试；不会降级直连。"};
+      case "RETRY":
+        if (s.connection !== "reconnecting" || s.network !== "available") return withMessage(s,"当前不满足重试条件。");
+        return {...s,connection:"connecting",retrySeconds:null,message:"执行重试。建立连接期间应代理流量仍被阻止。"};
+      case "NETWORK_LOST":
+        if (s.intent !== "running") return withMessage({...s,network:"lost"},"物理网络断开；代理未运行。");
+        return {...s,network:"lost",connection:"waiting-network",routedTraffic:"blocked",retrySeconds:null,dns:{...s.dns,active:"none",cacheEntries:0},message:"物理网络断开。VPN 保持；DNS 缓存清空；等待网络恢复。"};
+      case "NETWORK_RESTORED":
+        if (s.network === "available") return withMessage(s,"物理网络已经可用。");
+        if (s.intent !== "running") return withMessage({...s,network:"available"},"网络已恢复；用户未要求运行代理，因此不自动启动。");
+        return connect({...s,network:"available",connection:"reconnecting"},"网络恢复，自动重连；成功前应代理流量保持阻止。");
+      case "CHANGE_CONFIG": {
+        const changed = {...s,configRevision:s.configRevision+1,dns:{...s.dns,cacheEntries:0}};
+        if (s.intent !== "running") return withMessage(changed,"配置已保存；代理未运行，下次启动时应用。");
+        return connect(changed,"配置已保存并自动重连；旧连接停止，切换期间应代理流量保持阻止。");
+      }
+      case "SWITCH_SERVER": {
+        const next = s.server.startsWith("家里") ? "办公室 · 192.168.2.9:1080" : "家里 · 192.168.1.8:1080";
+        const changed={...s,server:next,configRevision:s.configRevision+1,dns:{...s.dns,cacheEntries:0}};
+        if(s.intent!=="running") return withMessage(changed,"当前服务器已切换；代理未运行，不建立连接。");
+        return connect(changed,"已切换服务器并自动重连；DNS 缓存已清空，切换期间禁止代理流量直连。");
+      }
+      case "SERVICE_CRASH":
+        if (s.service !== "running") return withMessage(s,"服务未运行，不存在可崩溃的实例。");
+        return {...s,intent:"stopped",service:"crashed",connection:"crashed",routedTraffic:"system-direct",retrySeconds:null,dns:{...s.dns,active:"none",cacheEntries:0},lastStop:"crash",message:"后台服务异常退出，Android 撤销 VPN，系统网络恢复。应用不会崩溃循环自启；下次打开需提示异常停止。"};
+      case "STOP":
+        if (s.intent === "stopped" && s.service !== "crashed") return withMessage(s,"代理已经停止。");
+        return {...s,intent:"stopped",service:"stopped",connection:"stopped",routedTraffic:"system-direct",retrySeconds:null,appliedRevision:null,dns:{...s.dns,active:"none",cacheEntries:0},lastStop:"user",message:"用户停止代理。VPN 撤销，DNS 缓存清空，手机恢复系统网络。"};
+      case "DNS_SUCCESS":
+        if(s.connection!=="connected") return withMessage(s,"代理未连接，不能模拟代理会话内的 DNS 成功。");
+        return {...s,dns:{...s.dns,cacheEntries:s.dns.cacheEntries+1},message:`${s.dns.active} 解析成功，结果写入内存缓存（受记录 TTL 与 30 分钟上限共同限制）。`};
+      case "DNS_PRIMARY_FAILED":
+        if(s.connection!=="connected") return withMessage(s,"代理未连接，不能执行 DNS 降级。");
+        if(s.dns.mode==="strict") return {...s,message:"DoH 失败：严格模式禁止降级。此次域名解析失败，但现有 SOCKS5 连接保持。"};
+        return {...s,dns:{...s.dns,active:s.dns.custom?"自定义 DNS":"系统 DNS"},message:"DoH 失败：自动降级到下一项。DNS 仍按“通过代理”策略传输。"};
+      case "TOGGLE_DNS_MODE":
+        return {...s,dns:{...s.dns,mode:s.dns.mode==="strict"?"fallback":"strict",cacheEntries:0},message:"DNS 模式已改变，缓存清空。运行中保存网络策略会触发重连（此按钮专注展示 DNS 选择逻辑）。"};
+      default: return withMessage(s,"未知操作，状态未变化。");
+    }
+  }
+  return { initialState, reducer };
+})();
+
+const ACTIONS = [
+  ["START","启动代理"],["PERMISSION_GRANTED","授予 VPN 权限"],["PERMISSION_DENIED","拒绝 VPN 权限"],
+  ["CONNECTED","SOCKS5 连接成功"],["CONNECTION_FAILED","SOCKS5 连接失败"],["RETRY","到时重试"],
+  ["NETWORK_LOST","网络断开"],["NETWORK_RESTORED","网络恢复"],["SWITCH_SERVER","切换服务器"],
+  ["CHANGE_CONFIG","保存配置变化"],["SERVICE_CRASH","服务崩溃"],["STOP","停止代理"],
+  ["DNS_SUCCESS","DNS 解析成功"],["DNS_PRIMARY_FAILED","当前 DNS 失败"],["TOGGLE_DNS_MODE","切换严格/自动降级"],["RESET","重置原型"]
+];
+const SCENARIOS = [
+  {name:"正常路径",desc:"首次授权并成功连接，确认连接前阻止流量、成功后才通过 SOCKS5。",steps:[["START","请求启动"],["PERMISSION_GRANTED","授予 VPN 权限"],["CONNECTED","连接成功"],["DNS_SUCCESS","完成一次 DNS 查询"],["STOP","主动停止"]]},
+  {name:"防泄漏",desc:"SOCKS5 故障和物理网络切换期间，VPN 保持且应代理流量始终为“阻止”。",steps:[["PERMISSION_GRANTED","预先授予权限"],["START","启动代理"],["CONNECTED","连接成功"],["CONNECTION_FAILED","服务器断开"],["RETRY","重试"],["NETWORK_LOST","物理网络断开"],["NETWORK_RESTORED","物理网络恢复"],["CONNECTED","重连成功"]]},
+  {name:"配置与服务器",desc:"运行中切换服务器或保存配置会立即进入重连，清缓存且不沿用旧链路。",steps:[["PERMISSION_GRANTED","授予权限"],["START","启动"],["CONNECTED","连接成功"],["DNS_SUCCESS","产生缓存"],["SWITCH_SERVER","切换到办公室"],["CONNECTED","新服务器连接成功"],["CHANGE_CONFIG","保存网络策略"],["CONNECTED","配置重连完成"]]},
+  {name:"异常恢复",desc:"权限拒绝不会残留启动意图；服务崩溃不会循环拉起，需用户明确重新启动。",steps:[["START","请求启动"],["PERMISSION_DENIED","拒绝权限"],["START","再次请求"],["PERMISSION_GRANTED","这次授予"],["CONNECTED","连接成功"],["SERVICE_CRASH","模拟服务崩溃"],["START","用户手动恢复"],["CONNECTED","恢复成功"]]},
+  {name:"DNS 策略",desc:"比较严格模式与自动降级。DoH 失败只影响解析，不允许网络流量改为直连。",steps:[["PERMISSION_GRANTED","授予权限"],["START","启动"],["CONNECTED","连接成功"],["DNS_PRIMARY_FAILED","严格模式下 DoH 失败"],["TOGGLE_DNS_MODE","改为自动降级"],["DNS_PRIMARY_FAILED","DoH 再次失败"],["DNS_SUCCESS","备用 DNS 成功"]]}
+];
+
+let state=ConnectionMachine.initialState(), activeScenario=0, stepIndex=0;
+const labels={intent:"用户意图",permission:"VPN 权限",service:"后台服务",network:"物理网络",connection:"代理连接",server:"当前服务器",configRevision:"配置版本",appliedRevision:"已应用版本",retrySeconds:"下次重试",routedTraffic:"应代理流量",lastStop:"上次停止",dns:"DNS 策略"};
+function display(v){ return v===null?"—":String(v); }
+function render(){
+  const dns=`${state.dns.mode==="strict"?"严格":"自动降级"} · 当前 ${state.dns.active} · 缓存 ${state.dns.cacheEntries} 条`;
+  const values={...state,dns}; delete values.message;
+  document.querySelector("#stateView").innerHTML=Object.entries(labels).map(([k,l])=>`<div class="field ${k==='dns'?'wide':''}"><span>${l}</span><strong>${display(values[k])}</strong></div>`).join("");
+  document.querySelector("#lastEvent").textContent=state.message;
+  const panel=document.querySelector("#statusPanel"); panel.className="panel status "+(state.connection==="connected"?"ok":state.connection==="crashed"||state.connection==="permission-denied"?"bad":state.intent==="running"?"warn":"");
+  renderWalkthrough();
+}
+function dispatch(type){ state=ConnectionMachine.reducer(state,{type}); render(); }
+document.querySelector("#freeActions").innerHTML=ACTIONS.map(([type,label])=>`<button data-action="${type}" class="${type==='START'?'primary':''}">${label}</button>`).join("");
+document.querySelector("#freeActions").addEventListener("click",e=>{ if(e.target.dataset.action) dispatch(e.target.dataset.action); });
+document.querySelector("#tabs").innerHTML=SCENARIOS.map((s,i)=>`<button role="tab" data-tab="${i}">${s.name}</button>`).join("");
+document.querySelector("#tabs").addEventListener("click",e=>{ if(e.target.dataset.tab!==undefined){ activeScenario=Number(e.target.dataset.tab); stepIndex=0; state=ConnectionMachine.initialState(); render(); }});
+function renderWalkthrough(){
+  const s=SCENARIOS[activeScenario];
+  document.querySelectorAll("#tabs button").forEach((b,i)=>b.setAttribute("aria-selected",String(i===activeScenario)));
+  document.querySelector("#walkthrough").innerHTML=`<h3>${s.name}</h3><p>${s.desc}</p>`+s.steps.map(([type,label],i)=>`<div class="step ${i<stepIndex?'done':i===stepIndex?'current':''}"><button data-step="${i}" ${i!==stepIndex?'disabled':''}>${i+1}. ${label}</button><p>${ACTIONS.find(a=>a[0]===type)[1]}</p></div>`).join("")+`<button id="restartWalkthrough">重新开始此场景</button>`;
+  document.querySelectorAll("[data-step]").forEach(b=>b.onclick=()=>{ const [type]=s.steps[stepIndex]; state=ConnectionMachine.reducer(state,{type}); stepIndex++; render(); });
+  document.querySelector("#restartWalkthrough").onclick=()=>{ stepIndex=0; state=ConnectionMachine.initialState(); render(); };
+}
+render();
+</script>
+</body>
+</html>

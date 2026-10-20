@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">SOCKS 路由器</string>
+    <string name="vpn_channel_name">SOCKS 代理状态</string>
+    <string name="vpn_running">SOCKS 代理运行中</string>
+    <string name="vpn_stop">停止</string>
+</resources>
