@@ -48,6 +48,12 @@ git push origin v1.0.1
 
 构建或签名验证失败时不会创建新 Release。配置好 Secrets 后，可在 Actions 中重试失败的运行；重试已有 Release 的运行会替换同名附件。当前所有 tag 都创建正式 Release，包括名称含有 `beta` 或 `rc` 的 tag。
 
+如果 tag 已存在但没有运行记录，可以在 **Actions → Release APK → Run workflow** 中选择 `main`，输入已有 tag（例如 `v1.0.0`）后手动发布。工作流会检出该 tag 的源码，使用该 tag 的版本名构建，不需要删除或移动 tag。也可以使用已登录的 GitHub CLI：
+
+```bash
+gh workflow run release.yml --repo Accelerating/SocksRouter --ref main -f tag=v1.0.0
+```
+
 本地构建默认版本仍为 `1.0` / `1`，也可手动指定：
 
 ```bash
